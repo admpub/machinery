@@ -3,17 +3,91 @@ package machinery_test
 import (
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"testing"
+	"unsafe"
 
-	"github.com/RichardKnop/machinery/v1"
-	"github.com/RichardKnop/machinery/v1/backends"
-	"github.com/RichardKnop/machinery/v1/brokers"
+	machinery "github.com/RichardKnop/machinery/v1"
 	"github.com/RichardKnop/machinery/v1/config"
 	"github.com/stretchr/testify/assert"
+
+	amqpbroker "github.com/RichardKnop/machinery/v1/brokers/amqp"
+	brokeriface "github.com/RichardKnop/machinery/v1/brokers/iface"
+	redisbroker "github.com/RichardKnop/machinery/v1/brokers/redis"
+	sqsbroker "github.com/RichardKnop/machinery/v1/brokers/sqs"
+
+	mongobackend "github.com/RichardKnop/machinery/v1/backends/mongo"
+	amqpbackend "github.com/RichardKnop/machinery/v1/backends/amqp"
+	memcachebackend "github.com/RichardKnop/machinery/v1/backends/memcache"
+	redisbackend "github.com/RichardKnop/machinery/v1/backends/redis"
+)
+
+var (
+	redisSchemeTestCases = []struct {
+		desc      string
+		url       string
+		host, pwd string
+		db        int
+		err       error
+	}{
+		{
+			desc: "invalid redis scheme",
+			url:  "non_redis://127.0.0.1:5672",
+			err:  errors.New("invalid redis scheme"),
+		},
+		{
+			desc: "empty redis scheme",
+			url:  "redis:/",
+		},
+		{
+			desc: "redis host",
+			url:  "redis://127.0.0.1:5672",
+			host: "127.0.0.1:5672",
+		},
+		{
+			desc: "redis password and host",
+			url:  "redis://pwd@127.0.0.1:5672",
+			host: "127.0.0.1:5672",
+			pwd:  "pwd",
+		},
+		{
+			desc: "redis password, host and db",
+			url:  "redis://pwd@127.0.0.1:5672/2",
+			host: "127.0.0.1:5672",
+			pwd:  "pwd",
+			db:   2,
+		},
+		{
+			desc: "redis user, password host",
+			url:  "redis://user:pwd@127.0.0.1:5672",
+			host: "127.0.0.1:5672",
+			pwd:  "pwd",
+		},
+		{
+			desc: "redis user, password with colon host",
+			url:  "redis://user:pwd:with:colon@127.0.0.1:5672",
+			host: "127.0.0.1:5672",
+			pwd:  "pwd:with:colon",
+		},
+		{
+			desc: "redis user, empty password and host",
+			url:  "redis://user:@127.0.0.1:5672",
+			host: "127.0.0.1:5672",
+			pwd:  "",
+		},
+		{
+			desc: "redis empty user, password and host",
+			url:  "redis://:pwd@127.0.0.1:5672",
+			host: "127.0.0.1:5672",
+			pwd:  "pwd",
+		},
+	}
 )
 
 func TestBrokerFactory(t *testing.T) {
+	t.Parallel()
+
 	var cnf config.Config
 
 	// 1) AMQP broker test
@@ -31,16 +105,16 @@ func TestBrokerFactory(t *testing.T) {
 
 	actual, err := machinery.BrokerFactory(&cnf)
 	if assert.NoError(t, err) {
-		_, isAMQPBroker := actual.(*brokers.AMQPBroker)
+		_, isAMQPBroker := actual.(*amqpbroker.Broker)
 		assert.True(
 			t,
 			isAMQPBroker,
 			"Broker should be instance of *brokers.AMQPBroker",
 		)
-		expected := brokers.NewAMQPBroker(&cnf)
+		expected := amqpbroker.New(&cnf)
 		assert.True(
 			t,
-			reflect.DeepEqual(actual, expected),
+			brokerEqual(actual, expected),
 			fmt.Sprintf("conn = %v, want %v", actual, expected),
 		)
 	}
@@ -55,16 +129,16 @@ func TestBrokerFactory(t *testing.T) {
 
 	actual, err = machinery.BrokerFactory(&cnf)
 	if assert.NoError(t, err) {
-		_, isRedisBroker := actual.(*brokers.RedisBroker)
+		_, isRedisBroker := actual.(*redisbroker.Broker)
 		assert.True(
 			t,
 			isRedisBroker,
 			"Broker should be instance of *brokers.RedisBroker",
 		)
-		expected := brokers.NewRedisBroker(&cnf, "localhost:6379", "password", "", 0)
+		expected := redisbroker.New(&cnf, "localhost:6379", "password", "", 0)
 		assert.True(
 			t,
-			reflect.DeepEqual(actual, expected),
+			brokerEqual(actual, expected),
 			fmt.Sprintf("conn = %v, want %v", actual, expected),
 		)
 	}
@@ -77,16 +151,16 @@ func TestBrokerFactory(t *testing.T) {
 
 	actual, err = machinery.BrokerFactory(&cnf)
 	if assert.NoError(t, err) {
-		_, isRedisBroker := actual.(*brokers.RedisBroker)
+		_, isRedisBroker := actual.(*redisbroker.Broker)
 		assert.True(
 			t,
 			isRedisBroker,
 			"Broker should be instance of *brokers.RedisBroker",
 		)
-		expected := brokers.NewRedisBroker(&cnf, "localhost:6379", "", "", 0)
+		expected := redisbroker.New(&cnf, "localhost:6379", "", "", 0)
 		assert.True(
 			t,
-			reflect.DeepEqual(actual, expected),
+			brokerEqual(actual, expected),
 			fmt.Sprintf("conn = %v, want %v", actual, expected),
 		)
 	}
@@ -99,16 +173,16 @@ func TestBrokerFactory(t *testing.T) {
 
 	actual, err = machinery.BrokerFactory(&cnf)
 	if assert.NoError(t, err) {
-		_, isRedisBroker := actual.(*brokers.RedisBroker)
+		_, isRedisBroker := actual.(*redisbroker.Broker)
 		assert.True(
 			t,
 			isRedisBroker,
 			"Broker should be instance of *brokers.RedisBroker",
 		)
-		expected := brokers.NewRedisBroker(&cnf, "", "", "/tmp/redis.sock", 0)
+		expected := redisbroker.New(&cnf, "", "", "/tmp/redis.sock", 0)
 		assert.True(
 			t,
-			reflect.DeepEqual(actual, expected),
+			brokerEqual(actual, expected),
 			fmt.Sprintf("conn = %v, want %v", actual, expected),
 		)
 	}
@@ -121,16 +195,60 @@ func TestBrokerFactory(t *testing.T) {
 
 	actual, err = machinery.BrokerFactory(&cnf)
 	if assert.NoError(t, err) {
-		_, isAWSSQSBroker := actual.(*brokers.AWSSQSBroker)
+		_, isAWSSQSBroker := actual.(*sqsbroker.Broker)
 		assert.True(
 			t,
 			isAWSSQSBroker,
 			"Broker should be instance of *brokers.AWSSQSBroker",
 		)
 	}
+
+	// 4) local SQS config should pass with special env variable
+	// AWS SQS Invalid SQS Check
+	cnf = config.Config{
+		Broker:       "http://localhost:5672/some-queue",
+		DefaultQueue: "machinery_tasks",
+	}
+
+	os.Setenv("DISABLE_STRICT_SQS_CHECK", "yes")
+	actual, err = machinery.BrokerFactory(&cnf)
+	if assert.NoError(t, err) {
+		_, isAWSSQSBroker := actual.(*sqsbroker.Broker)
+		assert.True(
+			t,
+			isAWSSQSBroker,
+			"Broker should be instance of *brokers.AWSSQSBroker",
+		)
+	}
+	os.Unsetenv("DISABLE_STRICT_SQS_CHECK")
+
+}
+
+func brokerEqual(x, y brokeriface.Broker) bool {
+	// unset Broker.stopChan and Broker.retryStopChan to nil before using
+	// reflect.DeepEqual() as the objects will have a different address
+	rx := reflect.ValueOf(x).Elem()
+	rxf := rx.FieldByName("stopChan")
+	rxf = reflect.NewAt(rxf.Type(), unsafe.Pointer(rxf.UnsafeAddr())).Elem()
+	rxf.Set(reflect.Zero(rxf.Type()))
+	rxf = rx.FieldByName("retryStopChan")
+	rxf = reflect.NewAt(rxf.Type(), unsafe.Pointer(rxf.UnsafeAddr())).Elem()
+	rxf.Set(reflect.Zero(rxf.Type()))
+
+	ry := reflect.ValueOf(y).Elem()
+	ryf := ry.FieldByName("stopChan")
+	ryf = reflect.NewAt(ryf.Type(), unsafe.Pointer(ryf.UnsafeAddr())).Elem()
+	ryf.Set(reflect.Zero(ryf.Type()))
+	ryf = ry.FieldByName("retryStopChan")
+	ryf = reflect.NewAt(ryf.Type(), unsafe.Pointer(ryf.UnsafeAddr())).Elem()
+	ryf.Set(reflect.Zero(ryf.Type()))
+
+	return reflect.DeepEqual(x, y)
 }
 
 func TestBrokerFactoryError(t *testing.T) {
+	t.Parallel()
+
 	cnf := config.Config{
 		Broker: "BOGUS",
 	}
@@ -140,9 +258,37 @@ func TestBrokerFactoryError(t *testing.T) {
 		assert.Nil(t, conn)
 		assert.Equal(t, "Factory failed with broker URL: BOGUS", err.Error())
 	}
+
+	// AWS SQS Invalid SQS Check
+	cnf = config.Config{
+		Broker:       "http://localhost:5672/some-queue",
+		DefaultQueue: "machinery_tasks",
+	}
+
+	conn, err = machinery.BrokerFactory(&cnf)
+	if assert.Error(t, err) {
+		assert.Nil(t, conn)
+		assert.Equal(t, "Factory failed with broker URL: http://localhost:5672/some-queue", err.Error())
+	}
+
+	// Non-AWS SQS URL allowed but not invalid http ones
+	os.Setenv("DISABLE_STRICT_SQS_CHECK", "yes")
+	cnf = config.Config{
+		Broker:       "localhost:5672/some-queue",
+		DefaultQueue: "machinery_tasks",
+	}
+
+	conn, err = machinery.BrokerFactory(&cnf)
+	if assert.Error(t, err) {
+		assert.Nil(t, conn)
+		assert.Equal(t, "Factory failed with broker URL: localhost:5672/some-queue", err.Error())
+	}
+	os.Unsetenv("DISABLE_STRICT_SQS_CHECK")
 }
 
 func TestBackendFactory(t *testing.T) {
+	t.Parallel()
+
 	var cnf config.Config
 
 	// 1) AMQP backend test
@@ -151,7 +297,7 @@ func TestBackendFactory(t *testing.T) {
 
 	actual, err := machinery.BackendFactory(&cnf)
 	if assert.NoError(t, err) {
-		expected := backends.NewAMQPBackend(&cnf)
+		expected := amqpbackend.New(&cnf)
 		assert.True(
 			t,
 			reflect.DeepEqual(actual, expected),
@@ -168,7 +314,7 @@ func TestBackendFactory(t *testing.T) {
 	actual, err = machinery.BackendFactory(&cnf)
 	if assert.NoError(t, err) {
 		servers := []string{"10.0.0.1:11211", "10.0.0.2:11211"}
-		expected := backends.NewMemcacheBackend(&cnf, servers)
+		expected := memcachebackend.New(&cnf, servers)
 		assert.True(
 			t,
 			reflect.DeepEqual(actual, expected),
@@ -185,7 +331,7 @@ func TestBackendFactory(t *testing.T) {
 
 	actual, err = machinery.BackendFactory(&cnf)
 	if assert.NoError(t, err) {
-		expected := backends.NewRedisBackend(&cnf, "localhost:6379", "password", "", 0)
+		expected := redisbackend.New(&cnf, "localhost:6379", "password", "", 0)
 		assert.True(
 			t,
 			reflect.DeepEqual(actual, expected),
@@ -200,7 +346,7 @@ func TestBackendFactory(t *testing.T) {
 
 	actual, err = machinery.BackendFactory(&cnf)
 	if assert.NoError(t, err) {
-		expected := backends.NewRedisBackend(&cnf, "localhost:6379", "", "", 0)
+		expected := redisbackend.New(&cnf, "localhost:6379", "", "", 0)
 		assert.True(
 			t,
 			reflect.DeepEqual(actual, expected),
@@ -215,7 +361,7 @@ func TestBackendFactory(t *testing.T) {
 
 	actual, err = machinery.BackendFactory(&cnf)
 	if assert.NoError(t, err) {
-		expected := backends.NewRedisBackend(&cnf, "", "", "/tmp/redis.sock", 0)
+		expected := redisbackend.New(&cnf, "", "", "/tmp/redis.sock", 0)
 		assert.True(
 			t,
 			reflect.DeepEqual(actual, expected),
@@ -224,23 +370,27 @@ func TestBackendFactory(t *testing.T) {
 	}
 
 	// 4) MongoDB backend test
-
 	cnf = config.Config{
-		ResultBackend: "mongodb://localhost:27017/tasks",
+		ResultBackend:   "mongodb://mongo:27017",
+		ResultsExpireIn: 30,
 	}
 
 	actual, err = machinery.BackendFactory(&cnf)
 	if assert.NoError(t, err) {
-		expected := backends.NewMongodbBackend(&cnf)
-		assert.True(
-			t,
-			reflect.DeepEqual(actual, expected),
-			fmt.Sprintf("conn = %v, want %v", actual, expected),
-		)
+		expected, err := mongobackend.New(&cnf)
+		if assert.NoError(t, err) {
+			assert.True(
+				t,
+				reflect.DeepEqual(actual, expected),
+				fmt.Sprintf("conn = %v, want %v", actual, expected),
+			)
+		}
 	}
 }
 
 func TestBackendFactoryError(t *testing.T) {
+	t.Parallel()
+
 	cnf := config.Config{
 		ResultBackend: "BOGUS",
 	}
@@ -257,76 +407,36 @@ func TestBackendFactoryError(t *testing.T) {
 }
 
 func TestParseRedisURL(t *testing.T) {
-	testCases := []struct {
-		url       string
-		host, pwd string
-		db        int
-		err       error
-	}{
-		{
-			url: "non_redis://127.0.0.1:5672",
-			err: errors.New("invalid redis scheme"),
-		},
-		{
-			url: "redis:/",
-			err: errors.New("invalid redis url scheme"),
-		},
-		{
-			url:  "redis://127.0.0.1:5672",
-			host: "127.0.0.1:5672",
-		},
-		{
-			url:  "redis://pwd@127.0.0.1:5672",
-			host: "127.0.0.1:5672",
-			pwd:  "pwd",
-		},
-		{
-			url:  "redis://pwd@127.0.0.1:5672/2",
-			host: "127.0.0.1:5672",
-			pwd:  "pwd",
-			db:   2,
-		},
-		{
-			url:  "redis://user:pwd@127.0.0.1:5672",
-			host: "127.0.0.1:5672",
-			pwd:  "pwd",
-		},
-		{
-			url:  "redis://user:pwd:with:colon@127.0.0.1:5672",
-			host: "127.0.0.1:5672",
-			pwd:  "pwd:with:colon",
-		},
-		{
-			url:  "redis://user:@127.0.0.1:5672",
-			host: "127.0.0.1:5672",
-			pwd:  "",
-		},
-		{
-			url:  "redis://:pwd@127.0.0.1:5672",
-			host: "127.0.0.1:5672",
-			pwd:  "pwd",
-		},
-	}
+	t.Parallel()
 
-	for _, tc := range testCases {
-		host, pwd, db, err := machinery.ParseRedisURL(tc.url)
-		if tc.err != nil {
-			assert.Error(t, err, tc.err)
-			continue
-		}
+	for _, tc := range redisSchemeTestCases {
+		tc := tc // capture range variable
+		t.Run(tc.desc, func(t *testing.T) {
+			t.Parallel()
 
-		if assert.NoError(t, err) {
-			assert.Equal(t, tc.host, host)
-			assert.Equal(t, tc.pwd, pwd)
-			assert.Equal(t, tc.db, db)
-		}
+			host, pwd, db, err := machinery.ParseRedisURL(tc.url)
+			if tc.err != nil {
+				assert.Error(t, err, tc.err)
+				return
+			}
+
+			if assert.NoError(t, err) {
+				assert.Equal(t, tc.host, host)
+				assert.Equal(t, tc.pwd, pwd)
+				assert.Equal(t, tc.db, db)
+			}
+		})
 	}
 }
 
 func TestParseRedisSocketURL(t *testing.T) {
-	var path, pwd, url string
-	var db int
-	var err error
+	t.Parallel()
+
+	var (
+		path, pwd, url string
+		db             int
+		err            error
+	)
 
 	url = "non_redissock:///tmp/redis.sock"
 	_, _, _, err = machinery.ParseRedisSocketURL(url)

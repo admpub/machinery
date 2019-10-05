@@ -10,12 +10,11 @@ import (
 	opentracing "github.com/opentracing/opentracing-go"
 	opentracing_log "github.com/opentracing/opentracing-go/log"
 
-	uuid "github.com/satori/go.uuid"
-
 	"github.com/RichardKnop/machinery/v1"
 	"github.com/RichardKnop/machinery/v1/config"
 	"github.com/RichardKnop/machinery/v1/log"
 	"github.com/RichardKnop/machinery/v1/tasks"
+	"github.com/google/uuid"
 	"github.com/urfave/cli"
 
 	exampletasks "github.com/RichardKnop/machinery/example/tasks"
@@ -126,6 +125,24 @@ func worker() error {
 	// The second argument is a consumer tag
 	// Ideally, each worker should have a unique tag (worker1, worker2 etc)
 	worker := server.NewWorker(consumerTag, 0)
+
+	// Here we inject some custom code for error handling,
+	// start and end of task hooks, useful for metrics for example.
+	errorhandler := func(err error) {
+		log.ERROR.Println("I am an error handler:", err)
+	}
+
+	pretaskhandler := func(signature *tasks.Signature) {
+		log.INFO.Println("I am a start of task handler for:", signature.Name)
+	}
+
+	posttaskhandler := func(signature *tasks.Signature) {
+		log.INFO.Println("I am an end of task handler for:", signature.Name)
+	}
+
+	worker.SetPostTaskHandler(posttaskhandler)
+	worker.SetErrorHandler(errorhandler)
+	worker.SetPreTaskHandler(pretaskhandler)
 
 	return worker.Launch()
 }
@@ -264,13 +281,7 @@ func send() error {
 	span, ctx := opentracing.StartSpanFromContext(context.Background(), "send")
 	defer span.Finish()
 
-	batchUUID, err := uuid.NewV4()
-
-	if err != nil {
-		return fmt.Errorf("Error generating batch id: %s", err.Error())
-	}
-
-	batchID := batchUUID.String()
+	batchID := uuid.New().String()
 	span.SetBaggageItem("batch.id", batchID)
 	span.LogFields(opentracing_log.String("batch.id", batchID))
 

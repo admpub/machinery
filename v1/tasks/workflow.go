@@ -3,7 +3,7 @@ package tasks
 import (
 	"fmt"
 
-	"github.com/satori/go.uuid"
+	"github.com/google/uuid"
 )
 
 // Chain creates a chain of tasks to be executed one after another
@@ -39,13 +39,7 @@ func NewChain(signatures ...*Signature) (*Chain, error) {
 	// Auto generate task UUIDs if needed
 	for _, signature := range signatures {
 		if signature.UUID == "" {
-
-			signatureID, err := uuid.NewV4()
-
-			if err != nil {
-				return nil, fmt.Errorf("Error generating signature id: %s", err.Error())
-			}
-
+			signatureID := uuid.New().String()
 			signature.UUID = fmt.Sprintf("task_%v", signatureID)
 		}
 	}
@@ -64,24 +58,13 @@ func NewChain(signatures ...*Signature) (*Chain, error) {
 // NewGroup creates a new group of tasks to be processed in parallel
 func NewGroup(signatures ...*Signature) (*Group, error) {
 	// Generate a group UUID
-	groupUUID, err := uuid.NewV4()
-
-	if err != nil {
-		return nil, fmt.Errorf("Error generating group uuid: %s", err.Error())
-	}
-
+	groupUUID := uuid.New().String()
 	groupID := fmt.Sprintf("group_%v", groupUUID)
 
 	// Auto generate task UUIDs if needed, group tasks by common group UUID
 	for _, signature := range signatures {
 		if signature.UUID == "" {
-
-			signatureID, err := uuid.NewV4()
-
-			if err != nil {
-				return nil, fmt.Errorf("Error generating signature id: %s", err.Error())
-			}
-
+			signatureID := uuid.New().String()
 			signature.UUID = fmt.Sprintf("task_%v", signatureID)
 		}
 		signature.GroupUUID = groupID
@@ -97,14 +80,11 @@ func NewGroup(signatures ...*Signature) (*Group, error) {
 // NewChord creates a new chord (a group of tasks with a single callback
 // to be executed after all tasks in the group has completed)
 func NewChord(group *Group, callback *Signature) (*Chord, error) {
-	// Generate a UUID for the chord callback
-	callbackID, err := uuid.NewV4()
-
-	if err != nil {
-		return nil, fmt.Errorf("Error generating callback id: %s", err.Error())
+	if callback.UUID == "" {
+		// Generate a UUID for the chord callback
+		callbackUUID := uuid.New().String()
+		callback.UUID = fmt.Sprintf("chord_%v", callbackUUID)
 	}
-
-	callback.UUID = fmt.Sprintf("chord_%v", callbackID)
 
 	// Add a chord callback to all tasks
 	for _, signature := range group.Tasks {

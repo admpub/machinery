@@ -1,7 +1,6 @@
 [1]: https://raw.githubusercontent.com/RichardKnop/assets/master/machinery/example_worker.png
 [2]: https://raw.githubusercontent.com/RichardKnop/assets/master/machinery/example_worker_receives_tasks.png
 [3]: http://patreon_public_assets.s3.amazonaws.com/sized/becomeAPatronBanner.png
-[4]: http://richardknop.com/images/btcaddress.png
 
 ## Machinery
 
@@ -42,7 +41,6 @@ Machinery is an asynchronous task queue/job queue based on distributed message p
   * [Requirements](#requirements)
   * [Dependencies](#dependencies)
   * [Testing](#testing)
-* [Supporting the project](#supporting-the-project)
 
 ### First Steps
 
@@ -57,7 +55,7 @@ First, you will need to define some tasks. Look at sample tasks in `example/task
 Second, you will need to launch a worker process:
 
 ```sh
-go run example/machinery.go worker
+go run example/machinery.go -c example/config.yml worker
 ```
 
 ![Example worker][1]
@@ -65,7 +63,7 @@ go run example/machinery.go worker
 Finally, once you have a worker running and waiting for tasks to consume, send some tasks:
 
 ```sh
-go run example/machinery.go send
+go run example/machinery.go -c example/config.yml send
 ```
 
 You will be able to see the tasks being processed asynchronously by the worker:
@@ -83,7 +81,7 @@ cnf, err := config.NewFromEnvironment(true)
 Or load from YAML file:
 
 ```go
-cnf := config.NewFromFile("config.yml", true)
+cnf, err := config.NewFromYaml("config.yml", true)
 ```
 
 Second boolean flag enables live reloading of configuration every 10 seconds. Use `false` to disable live reloading.
@@ -117,7 +115,7 @@ redis+socket://[password@]/path/to/file.sock[:/db_num]
 
 For example:
 
-1. `redis://127.0.0.1:6379`, or with password `redis://password@127.0.0.1:6379`
+1. `redis://localhost:6379`, or with password `redis://password@localhost:6379`
 2. `redis+socket://password@/path/to/file.sock:/0`
 
 ##### AWS SQS
@@ -156,6 +154,33 @@ var cnf = &config.Config{
 }
 ```
 
+##### GCP Pub/Sub
+
+Use GCP Pub/Sub URL in the format:
+
+```
+gcppubsub://YOUR_GCP_PROJECT_ID/YOUR_PUBSUB_SUBSCRIPTION_NAME
+```
+
+To use a manually configured Pub/Sub Client:
+
+```go
+pubsubClient, err := pubsub.NewClient(
+    context.Background(),
+    "YOUR_GCP_PROJECT_ID",
+    option.WithServiceAccountFile("YOUR_GCP_SERVICE_ACCOUNT_FILE"),
+)
+
+cnf := &config.Config{
+  Broker:          "gcppubsub://YOUR_GCP_PROJECT_ID/YOUR_PUBSUB_SUBSCRIPTION_NAME"
+  DefaultQueue:    "YOUR_PUBSUB_TOPIC_NAME",
+  ResultBackend:   "YOUR_BACKEND_URL",
+  GCPPubSub: config.GCPPubSubConfig{
+    Client: pubsubClient,
+  },
+}
+```
+
 #### DefaultQueue
 
 Default queue name, e.g. `machinery_tasks`.
@@ -177,7 +202,7 @@ redis+socket://[password@]/path/to/file.sock[:/db_num]
 
 For example:
 
-1. `redis://127.0.0.1:6379`, or with password `redis://password@127.0.0.1:6379`
+1. `redis://localhost:6379`, or with password `redis://password@localhost:6379`
 2. `redis+socket://password@/path/to/file.sock:/0`
 
 ##### Memcache
@@ -190,7 +215,7 @@ memcache://host1[:port1][,host2[:port2],...[,hostN[:portN]]]
 
 For example:
 
-1. `memcache://127.0.0.1:11211` for a single instance, or
+1. `memcache://localhost:11211` for a single instance, or
 2. `memcache://10.0.0.1:11211,10.0.0.2:11211` for a cluster
 
 ##### AMQP
@@ -217,7 +242,7 @@ mongodb://[username:password@]host1[:port1][,host2[:port2],...[,hostN[:portN]]][
 
 For example:
 
-1. `mongodb://127.0.0.1:27017/taskresults`
+1. `mongodb://localhost:27017/taskresults`
 
 See [MongoDB docs](https://docs.mongodb.org/manual/reference/connection-string/) for more information.
 
@@ -228,7 +253,7 @@ How long to store task results for in seconds. Defaults to `3600` (1 hour).
 
 #### AMQP
 
-RabbitMQ related configuration. Not neccessarry if you are using other broker/backend.
+RabbitMQ related configuration. Not necessary if you are using other broker/backend.
 
 * `Exchange`: exchange name, e.g. `machinery_exchange`
 * `ExchangeType`: exchange type, e.g. `direct`
@@ -237,7 +262,7 @@ RabbitMQ related configuration. Not neccessarry if you are using other broker/ba
 * `PrefetchCount`: How many tasks to prefetch (set to `1` if you have long running tasks)
 
 #### Dynamodb
-Dynamodb related configuration. Not neccessarry if you are using other backend.
+Dynamodb related configuration. Not necessary if you are using other backend.
 * `task_states_table`: Custom table name for saving task states. Default one is `task_states`, and make sure to create this table in your AWS admin first, using `TaskUUID` as table's primary key.
 * `group_metas_table`: Custom table name for saving group metas. Default one is `group_metas`, and make sure to create this table in your AWS admin first, using `GroupUUID` as table's primary key.
 For example:
@@ -314,7 +339,7 @@ if err != nil {
 }
 ```
 
-Each worker will only consume registered tasks. For each task on the queue the Worker.Process() method will will be run
+Each worker will only consume registered tasks. For each task on the queue the Worker.Process() method will be run
 in a goroutine. Use the second parameter of `server.NewWorker` to limit the number of concurrently running Worker.Process()
 calls (per worker). Example: 1 will serialize task execution while 0 makes the number of concurrently executed tasks unlimited (default).
 
@@ -652,6 +677,18 @@ for _, result := range results {
 }
 ```
 
+#### Error Handling
+
+When a task returns with an error, the default behavior is to first attempty to retry the task if it's retriable, otherwise log the error and then eventually call any error callbacks.
+
+To customize this, you can set a custom error handler on the worker which can do more than just logging after retries fail and error callbacks are trigerred:
+
+```go
+worker.SetErrorHandler(func (err error) {
+  customHandler(err)
+})
+```
+
 ### Workflows
 
 Running a single asynchronous task is fine but often you will want to design a workflow of tasks to be executed in an orchestrated way. There are couple of useful functions to help you design workflows.
@@ -695,7 +732,7 @@ signature2 := tasks.Signature{
 }
 
 group, _ := tasks.NewGroup(&signature1, &signature2)
-asyncResults, err := server.SendGroup(group)
+asyncResults, err := server.SendGroup(group, 0) //The second parameter specifies the number of concurrent sending tasks. 0 means unlimited.
 if err != nil {
   // failed to send the group
   // do something with the error
@@ -761,7 +798,7 @@ signature3 := tasks.Signature{
 
 group := tasks.NewGroup(&signature1, &signature2)
 chord, _ := tasks.NewChord(group, &signature3)
-chordAsyncResult, err := server.SendChord(chord)
+chordAsyncResult, err := server.SendChord(chord, 0) //The second parameter specifies the number of concurrent sending tasks. 0 means unlimited.
 if err != nil {
   // failed to send the chord
   // do something with the error
@@ -879,7 +916,7 @@ for _, result := range results {
 #### Requirements
 
 * Go
-* RabbitMQ
+* RabbitMQ (optional)
 * Redis (optional)
 * Memcached (optional)
 * MongoDB (optional)
@@ -894,15 +931,21 @@ brew install memcached
 brew install mongodb
 ```
 
+Or optionally use the corresponding [Docker](http://docker.io/) containers:
+
+```
+docker run -d -p 5672:5672 rabbitmq
+docker run -d -p 6379:6379 redis
+docker run -d -p 11211:11211 memcached
+docker run -d -p 27017:27017 mongo
+docker run -d -p 6831:6831/udp -p 16686:16686 jaegertracing/all-in-one:latest
+```
+
 #### Dependencies
 
-According to [Go 1.5 Vendor experiment](https://docs.google.com/document/d/1Bz5-UB7g2uPBdOx-rw5t9MxJwkfpx90cqG9AFL0JAYo), all dependencies are stored in the vendor directory. This approach is called `vendoring` and is the best practice for Go projects to lock versions of dependencies in order to achieve reproducible builds.
+Since Go 1.11, a new recommended dependency management system is via [modules](https://github.com/golang/go/wiki/Modules).
 
-This project uses [dep](https://github.com/golang/dep) for dependency management. To update dependencies during development:
-
-```sh
-dep ensure
-```
+This is one of slight weaknesses of Go as dependency management is not a solved problem. Previously Go was officially recommending to use the [dep tool](https://github.com/golang/dep) but that has been abandoned now in favor of modules.
 
 #### Testing
 
@@ -924,9 +967,9 @@ In order to enable integration tests, you will need to install all required serv
 
 ```sh
 export AMQP_URL=amqp://guest:guest@localhost:5672/
-export REDIS_URL=127.0.0.1:6379
-export MEMCACHE_URL=127.0.0.1:11211
-export MONGODB_URL=127.0.0.1:27017
+export REDIS_URL=localhost:6379
+export MEMCACHE_URL=localhost:11211
+export MONGODB_URL=localhost:27017
 ```
 
 To run integration tests against an SQS instance, you will need to create a "test_queue" in SQS and export these environment variables:
@@ -945,9 +988,3 @@ make test
 ```
 
 If the environment variables are not exported, `make test` will only run unit tests.
-
-### Supporting the project
-
-Donate BTC to my wallet if you find this project useful: `12iFVjQ5n3Qdmiai4Mp9EG93NSvDipyRKV`
-
-![Donate BTC][4]

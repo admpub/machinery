@@ -3,27 +3,42 @@ package machinery
 import (
 	"errors"
 	"fmt"
+	neturl "net/url"
+	"os"
 	"strconv"
 	"strings"
 
-	"github.com/RichardKnop/machinery/v1/backends"
-	"github.com/RichardKnop/machinery/v1/brokers"
 	"github.com/RichardKnop/machinery/v1/config"
+
+	amqpbroker "github.com/RichardKnop/machinery/v1/brokers/amqp"
+	eagerbroker "github.com/RichardKnop/machinery/v1/brokers/eager"
+	gcppubsubbroker "github.com/RichardKnop/machinery/v1/brokers/gcppubsub"
+	brokeriface "github.com/RichardKnop/machinery/v1/brokers/iface"
+	redisbroker "github.com/RichardKnop/machinery/v1/brokers/redis"
+	sqsbroker "github.com/RichardKnop/machinery/v1/brokers/sqs"
+
+	amqpbackend "github.com/RichardKnop/machinery/v1/backends/amqp"
+	dynamobackend "github.com/RichardKnop/machinery/v1/backends/dynamodb"
+	eagerbackend "github.com/RichardKnop/machinery/v1/backends/eager"
+	backendiface "github.com/RichardKnop/machinery/v1/backends/iface"
+	memcachebackend "github.com/RichardKnop/machinery/v1/backends/memcache"
+	mongobackend "github.com/RichardKnop/machinery/v1/backends/mongo"
+	nullbackend "github.com/RichardKnop/machinery/v1/backends/null"
+	redisbackend "github.com/RichardKnop/machinery/v1/backends/redis"
 )
 
-// BrokerFactory creates a new object of brokers.Interface
+// BrokerFactory creates a new object of iface.Broker
 // Currently only AMQP/S broker is supported
-func BrokerFactory(cnf *config.Config) (brokers.Interface, error) {
+func BrokerFactory(cnf *config.Config) (brokeriface.Broker, error) {
 	if strings.HasPrefix(cnf.Broker, "amqp://") {
-		return brokers.NewAMQPBroker(cnf), nil
+		return amqpbroker.New(cnf), nil
 	}
 
 	if strings.HasPrefix(cnf.Broker, "amqps://") {
-		return brokers.NewAMQPBroker(cnf), nil
+		return amqpbroker.New(cnf), nil
 	}
 
 	if strings.HasPrefix(cnf.Broker, "redis://") {
-
 		parts := strings.Split(cnf.Broker, "redis://")
 		if len(parts) != 2 {
 			return nil, fmt.Errorf(
@@ -36,7 +51,7 @@ func BrokerFactory(cnf *config.Config) (brokers.Interface, error) {
 		if err != nil {
 			return nil, err
 		}
-		return brokers.NewRedisBroker(cnf, redisHost, redisPassword, "", redisDB), nil
+		return redisbroker.New(cnf, redisHost, redisPassword, "", redisDB), nil
 	}
 
 	if strings.HasPrefix(cnf.Broker, "redis+socket://") {
@@ -45,15 +60,33 @@ func BrokerFactory(cnf *config.Config) (brokers.Interface, error) {
 			return nil, err
 		}
 
-		return brokers.NewRedisBroker(cnf, "", redisPassword, redisSocket, redisDB), nil
+		return redisbroker.New(cnf, "", redisPassword, redisSocket, redisDB), nil
 	}
 
 	if strings.HasPrefix(cnf.Broker, "eager") {
-		return brokers.NewEagerBroker(), nil
+		return eagerbroker.New(), nil
 	}
 
-	if strings.HasPrefix(cnf.Broker, "https://sqs") {
-		return brokers.NewAWSSQSBroker(cnf), nil
+	if _, ok := os.LookupEnv("DISABLE_STRICT_SQS_CHECK"); ok {
+		//disable SQS name check, so that users can use this with local simulated SQS
+		//where sql broker url might not start with https://sqs
+
+		//even when disabling strict SQS naming check, make sure its still a valid http URL
+		if strings.HasPrefix(cnf.Broker, "https://") || strings.HasPrefix(cnf.Broker, "http://") {
+			return sqsbroker.New(cnf), nil
+		}
+	} else {
+		if strings.HasPrefix(cnf.Broker, "https://sqs") {
+			return sqsbroker.New(cnf), nil
+		}
+	}
+
+	if strings.HasPrefix(cnf.Broker, "gcppubsub://") {
+		projectID, subscriptionName, err := ParseGCPPubSubURL(cnf.Broker)
+		if err != nil {
+			return nil, err
+		}
+		return gcppubsubbroker.New(cnf, projectID, subscriptionName)
 	}
 
 	return nil, fmt.Errorf("Factory failed with broker URL: %v", cnf.Broker)
@@ -61,13 +94,13 @@ func BrokerFactory(cnf *config.Config) (brokers.Interface, error) {
 
 // BackendFactory creates a new object of backends.Interface
 // Currently supported backends are AMQP/S and Memcache
-func BackendFactory(cnf *config.Config) (backends.Interface, error) {
+func BackendFactory(cnf *config.Config) (backendiface.Backend, error) {
 	if strings.HasPrefix(cnf.ResultBackend, "amqp://") {
-		return backends.NewAMQPBackend(cnf), nil
+		return amqpbackend.New(cnf), nil
 	}
 
 	if strings.HasPrefix(cnf.ResultBackend, "amqps://") {
-		return backends.NewAMQPBackend(cnf), nil
+		return amqpbackend.New(cnf), nil
 	}
 
 	if strings.HasPrefix(cnf.ResultBackend, "memcache://") {
@@ -79,7 +112,7 @@ func BackendFactory(cnf *config.Config) (backends.Interface, error) {
 			)
 		}
 		servers := strings.Split(parts[1], ",")
-		return backends.NewMemcacheBackend(cnf, servers), nil
+		return memcachebackend.New(cnf, servers), nil
 	}
 
 	if strings.HasPrefix(cnf.ResultBackend, "redis://") {
@@ -88,7 +121,7 @@ func BackendFactory(cnf *config.Config) (backends.Interface, error) {
 			return nil, err
 		}
 
-		return backends.NewRedisBackend(cnf, redisHost, redisPassword, "", redisDB), nil
+		return redisbackend.New(cnf, redisHost, redisPassword, "", redisDB), nil
 	}
 
 	if strings.HasPrefix(cnf.ResultBackend, "redis+socket://") {
@@ -97,19 +130,24 @@ func BackendFactory(cnf *config.Config) (backends.Interface, error) {
 			return nil, err
 		}
 
-		return backends.NewRedisBackend(cnf, "", redisPassword, redisSocket, redisDB), nil
+		return redisbackend.New(cnf, "", redisPassword, redisSocket, redisDB), nil
 	}
 
-	if strings.HasPrefix(cnf.ResultBackend, "mongodb://") {
-		return backends.NewMongodbBackend(cnf), nil
+	if strings.HasPrefix(cnf.ResultBackend, "mongodb://") ||
+		strings.HasPrefix(cnf.ResultBackend, "mongodb+srv://") {
+		return mongobackend.New(cnf)
 	}
 
 	if strings.HasPrefix(cnf.ResultBackend, "eager") {
-		return backends.NewEagerBackend(), nil
+		return eagerbackend.New(), nil
+	}
+
+	if strings.HasPrefix(cnf.ResultBackend, "null") {
+		return nullbackend.New(), nil
 	}
 
 	if strings.HasPrefix(cnf.ResultBackend, "https://dynamodb") {
-		return backends.NewDynamoDBBackend(cnf), nil
+		return dynamobackend.New(cnf), nil
 	}
 
 	return nil, fmt.Errorf("Factory failed with result backend: %v", cnf.ResultBackend)
@@ -119,46 +157,36 @@ func BackendFactory(cnf *config.Config) (backends.Interface, error) {
 func ParseRedisURL(url string) (host, password string, db int, err error) {
 	// redis://pwd@host/db
 
-	parts := strings.Split(url, "redis://")
-	if parts[0] != "" {
+	var u *neturl.URL
+	u, err = neturl.Parse(url)
+	if err != nil {
+		return
+	}
+	if u.Scheme != "redis" {
 		err = errors.New("No redis scheme found")
 		return
 	}
-	if len(parts) != 2 {
-		err = fmt.Errorf("Redis connection string should be in format redis://password@host:port/db, instead got %s", url)
-		return
-	}
-	parts = strings.Split(parts[1], "@")
-	var hostAndDB string
-	if len(parts) == 2 {
-		//[pwd, host/db]
-		password = parts[0]
 
-		// Proper URL has format redis://user:password@host/...
-		// Redis doesn't have concept of users, but some Redis providers like Heroku pass
-		// user in URL to make properly formatted URL.
-		// We must ignore user part of URL. See https://github.com/RichardKnop/machinery/issues/214
-		passwordParts := strings.Split(password, ":")
-		if len(passwordParts) >= 2 {
-			password = strings.TrimLeft(password, passwordParts[0]+":")
+	if u.User != nil {
+		var exists bool
+		password, exists = u.User.Password()
+		if !exists {
+			password = u.User.Username()
 		}
-
-		hostAndDB = parts[1]
-	} else {
-		hostAndDB = parts[0]
 	}
-	parts = strings.Split(hostAndDB, "/")
+
+	host = u.Host
+
+	parts := strings.Split(u.Path, "/")
 	if len(parts) == 1 {
-		//[host]
-		host, db = parts[0], 0 //default redis db
+		db = 0 //default redis db
 	} else {
-		//[host, db]
-		host = parts[0]
 		db, err = strconv.Atoi(parts[1])
 		if err != nil {
 			db, err = 0, nil //ignore err here
 		}
 	}
+
 	return
 }
 
@@ -209,4 +237,32 @@ func ParseRedisSocketURL(url string) (path, password string, db int, err error) 
 	}
 
 	return
+}
+
+// ParseGCPPubSubURL Parse GCP Pub/Sub URL
+// url: gcppubsub://YOUR_GCP_PROJECT_ID/YOUR_PUBSUB_SUBSCRIPTION_NAME
+func ParseGCPPubSubURL(url string) (string, string, error) {
+	parts := strings.Split(url, "gcppubsub://")
+	if parts[0] != "" {
+		return "", "", errors.New("No gcppubsub scheme found")
+	}
+
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("gcppubsub scheme should be in format gcppubsub://YOUR_GCP_PROJECT_ID/YOUR_PUBSUB_SUBSCRIPTION_NAME, instead got %s", url)
+	}
+
+	remainder := parts[1]
+
+	parts = strings.Split(remainder, "/")
+	if len(parts) == 2 {
+		if len(parts[0]) == 0 {
+			return "", "", fmt.Errorf("gcppubsub scheme should be in format gcppubsub://YOUR_GCP_PROJECT_ID/YOUR_PUBSUB_SUBSCRIPTION_NAME, instead got %s", url)
+		}
+		if len(parts[1]) == 0 {
+			return "", "", fmt.Errorf("gcppubsub scheme should be in format gcppubsub://YOUR_GCP_PROJECT_ID/YOUR_PUBSUB_SUBSCRIPTION_NAME, instead got %s", url)
+		}
+		return parts[0], parts[1], nil
+	}
+
+	return "", "", fmt.Errorf("gcppubsub scheme should be in format gcppubsub://YOUR_GCP_PROJECT_ID/YOUR_PUBSUB_SUBSCRIPTION_NAME, instead got %s", url)
 }
