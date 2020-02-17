@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RichardKnop/machinery/v1/brokers/errs"
 	"github.com/RichardKnop/machinery/v1/brokers/iface"
 	"github.com/RichardKnop/machinery/v1/common"
 	"github.com/RichardKnop/machinery/v1/config"
@@ -54,11 +55,6 @@ func New(cnf *config.Config) iface.Broker {
 	}
 
 	return b
-}
-
-// GetPendingTasks returns a slice of task.Signatures waiting in the queue
-func (b *Broker) GetPendingTasks(queue string) ([]*tasks.Signature, error) {
-	return nil, errors.New("Not implemented")
 }
 
 // StartConsuming enters a loop and waits for incoming messages
@@ -209,6 +205,10 @@ func (b *Broker) consumeOne(delivery *awssqs.ReceiveMessageOutput, taskProcessor
 	decoder.UseNumber()
 	if err := decoder.Decode(sig); err != nil {
 		log.ERROR.Printf("unmarshal error. the delivery is %v", delivery)
+		// if the unmarshal fails, remove the delivery from the queue
+		if delErr := b.deleteOne(delivery); delErr != nil {
+			log.ERROR.Printf("error when deleting the delivery. delivery is %v, Error=%s", delivery, delErr)
+		}
 		return err
 	}
 	if delivery.Messages[0].ReceiptHandle != nil {
@@ -218,11 +218,18 @@ func (b *Broker) consumeOne(delivery *awssqs.ReceiveMessageOutput, taskProcessor
 	// If the task is not registered return an error
 	// and leave the message in the queue
 	if !b.IsTaskRegistered(sig.Name) {
+		if sig.IgnoreWhenTaskNotRegistered {
+			b.deleteOne(delivery)
+		}
 		return fmt.Errorf("task %s is not registered", sig.Name)
 	}
 
 	err := taskProcessor.Process(sig)
 	if err != nil {
+		// stop task deletion in case we want to send messages to dlq in sqs
+		if err == errs.ErrStopTaskDeletion {
+			return nil
+		}
 		return err
 	}
 	// Delete message after successfully consuming and processing the message
